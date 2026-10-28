@@ -193,6 +193,150 @@ siem_queue_depth = Gauge(
     ["destination"],
 )
 
+# Alerting metrics (Issue #5805, PRD FR-27).
+# Label values are bounded: every label passes through normalize_alert_label(),
+# which maps anything outside the allow-list to "other". Free text, alert IDs,
+# team IDs and user identities must never be used as label values.
+ALERT_SOURCES: tuple[str, ...] = ("security", "gateway_health", "performance", "a2a", "plugin")
+ALERT_SEVERITIES: tuple[str, ...] = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
+ALERT_CHANNELS: tuple[str, ...] = ("in_app", "email", "webhook")
+ALERT_DELIVERY_RESULTS: tuple[str, ...] = ("sent", "failed", "dead_lettered", "dropped")
+ALERT_OTHER_LABEL = "other"
+
+# Time-to-acknowledge spans minutes to days, so it uses wider buckets than delivery latency.
+ALERT_TIME_TO_ACK_BUCKETS: tuple[float, ...] = (60, 300, 900, 1800, 3600, 7200, 14400, 28800, 86400, 172800)
+
+
+def normalize_alert_label(value, allowed: tuple[str, ...], default: str = ALERT_OTHER_LABEL) -> str:
+    """Map an arbitrary value onto a bounded metric label value.
+
+    Enum members are unwrapped to their ``value``. Strings are stripped and matched
+    case-insensitively against ``allowed``; the canonical member of ``allowed`` is
+    returned. Anything outside ``allowed`` (including ``None``) returns ``default``,
+    so a free-text or identifier value can never create a new time series.
+
+    Args:
+        value: Raw label value supplied by a caller.
+        allowed: Tuple of permitted canonical label values.
+        default: Value returned when ``value`` is not permitted.
+
+    Returns:
+        str: A member of ``allowed`` or ``default``.
+
+    Examples:
+        >>> normalize_alert_label("high", ALERT_SEVERITIES)
+        'HIGH'
+        >>> normalize_alert_label("user@example.com", ALERT_SEVERITIES)
+        'other'
+        >>> normalize_alert_label(None, ALERT_SOURCES, default="security")
+        'security'
+    """
+    if value is None:
+        return default
+    raw = getattr(value, "value", value)
+    if not isinstance(raw, str):
+        return default
+    candidate = raw.strip().lower()
+    for canonical in allowed:
+        if canonical.lower() == candidate:
+            return canonical
+    return default
+
+
+def _get_or_create_collector(metric_name: str, factory):
+    """Return the registered collector for ``metric_name`` or create it via ``factory``.
+
+    Guards against duplicate registration when the module is re-imported or a second
+    application is created in the same process.
+
+    Args:
+        metric_name (str): Registry name of the collector (counters use the ``_total`` form).
+        factory: Zero-argument callable that constructs the collector.
+
+    Returns:
+        Any: The existing or newly created Prometheus collector.
+    """
+    collector = _get_registry_collector(metric_name)
+    if collector is not None:
+        return collector
+    try:
+        return factory()
+    except ValueError:
+        return _get_registry_collector(metric_name)
+
+
+alerts_created_total = _get_or_create_collector(
+    "alerts_created_total",
+    lambda: Counter(
+        "alerts_created",
+        "Alerts created (new alert rows, not deduplicated occurrences) by source and severity",
+        ["source", "severity"],
+    ),
+)
+
+alerts_deduplicated_total = _get_or_create_collector(
+    "alerts_deduplicated_total",
+    lambda: Counter(
+        "alerts_deduplicated",
+        "Alert emissions folded into an existing alert within the dedup window, by source",
+        ["source"],
+    ),
+)
+
+alert_deliveries_total = _get_or_create_collector(
+    "alert_deliveries_total",
+    lambda: Counter(
+        "alert_deliveries",
+        "Alert delivery attempts by channel and result",
+        ["channel", "result"],
+    ),
+)
+
+alert_delivery_latency_seconds = _get_or_create_collector(
+    "alert_delivery_latency_seconds",
+    lambda: Histogram(
+        "alert_delivery_latency_seconds",
+        "Time from alert creation to a successful delivery, by channel",
+        ["channel"],
+        buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600),
+    ),
+)
+
+alert_queue_depth = _get_or_create_collector(
+    "alert_queue_depth",
+    lambda: Gauge(
+        "alert_queue_depth",
+        "Current number of alert deliveries waiting in the outbox (pending state)",
+    ),
+)
+
+alert_deliveries_dropped_total = _get_or_create_collector(
+    "alert_deliveries_dropped_total",
+    lambda: Counter(
+        "alert_deliveries_dropped",
+        "Alert deliveries dropped by backpressure, by severity",
+        ["severity"],
+    ),
+)
+
+alerts_open = _get_or_create_collector(
+    "alerts_open",
+    lambda: Gauge(
+        "alerts_open",
+        "Currently open alerts by severity",
+        ["severity"],
+    ),
+)
+
+alert_time_to_ack_seconds = _get_or_create_collector(
+    "alert_time_to_ack_seconds",
+    lambda: Histogram(
+        "alert_time_to_ack_seconds",
+        "Time from alert creation to acknowledgement",
+        buckets=ALERT_TIME_TO_ACK_BUCKETS,
+    ),
+)
+
 gateway_lifecycle_status_gauge = Gauge(
     "gateway_lifecycle_status",
     "Current gateway counts by async lifecycle status",

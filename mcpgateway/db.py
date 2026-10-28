@@ -1434,6 +1434,12 @@ class Permissions:
     TAGS_UPDATE = "tags.update"
     TAGS_DELETE = "tags.delete"
 
+    # Alerting permissions
+    ALERTS_READ = "alerts.read"
+    ALERTS_ACKNOWLEDGE = "alerts.acknowledge"
+    ALERTS_MANAGE = "alerts.manage"
+    ALERTS_SUBSCRIBE = "alerts.subscribe"
+
     # Special permissions
     ALL_PERMISSIONS = "*"  # Wildcard for all permissions
 
@@ -6368,6 +6374,174 @@ class SecurityEvent(Base):
         Index("idx_security_ip_time", "client_ip", "timestamp"),
         Index("idx_security_unresolved", "resolved", "severity", "timestamp"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Alerting and Notification Models
+# ---------------------------------------------------------------------------
+
+
+class Alert(Base):
+    """A durable, team-scoped alert record produced from an actionable event.
+
+    ``team_id IS NULL`` marks a global alert, which is visible to platform
+    administrators only. Alerts are deduplicated on ``dedup_key`` within the
+    configured dedup window and move through the lifecycle states
+    ``open`` -> ``acknowledged`` -> ``resolved`` (or ``expired`` / ``suppressed``).
+    """
+
+    __tablename__ = "alerts"
+
+    # Primary key
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: uuid.uuid4().hex)
+
+    # Classification
+    source: Mapped[str] = mapped_column(String(50), nullable=False)  # security, gateway_health, performance, a2a, plugin
+    type: Mapped[str] = mapped_column(String(100), nullable=False)  # e.g. brute_force, gateway_unhealthy
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)  # LOW, MEDIUM, HIGH, CRITICAL
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")  # open, acknowledged, resolved, expired, suppressed
+
+    # Content (sanitized before storage)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Subject entity
+    entity_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    entity_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Team scope (NULL = global, admin-only)
+    team_id: Mapped[Optional[str]] = mapped_column(String(36), index=True, nullable=True)
+
+    # Deduplication and aggregation
+    dedup_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
+
+    # Lifecycle tracking
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    ack_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    ack_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Link to the originating security event, when there is one
+    security_event_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+
+    # Redacted, bounded context. The attribute is named alert_metadata because
+    # ``metadata`` is reserved on declarative classes; the column keeps the name.
+    alert_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column("metadata", JSON, nullable=True)
+
+    __table_args__ = (
+        Index("idx_alerts_team_status_created", "team_id", "status", "created_at"),
+        Index("idx_alerts_dedup_status", "dedup_key", "status"),
+        Index("idx_alerts_severity_created", "severity", "created_at"),
+    )
+
+
+class AlertDelivery(Base):
+    """One outbox row per (alert, recipient, channel) delivery attempt.
+
+    Rows are claimed by the delivery dispatcher using ``(state, next_attempt_at)``.
+    The lifecycle is ``pending`` -> ``sent`` | ``failed`` -> ``dead_lettered``.
+    ``read_at`` and ``ack_at`` track per-recipient inbox state for in-app delivery.
+    """
+
+    __tablename__ = "alert_deliveries"
+
+    # Primary key
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: uuid.uuid4().hex)
+
+    # Parent alert (cascade removal with the alert)
+    alert_id: Mapped[str] = mapped_column(String(36), ForeignKey("alerts.id", ondelete="CASCADE"), nullable=False)
+
+    # Recipient and channel
+    user_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    channel: Mapped[str] = mapped_column(String(20), nullable=False)  # in_app, email, webhook
+    channel_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+
+    # Outbox state
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")  # pending, sent, failed, dead_lettered
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    ack_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_alert_deliveries_user_read", "user_email", "read_at"),
+        Index("idx_alert_deliveries_state_next", "state", "next_attempt_at"),
+        Index("idx_alert_deliveries_alert", "alert_id"),
+    )
+
+
+class AlertPreference(Base):
+    """Per-user routing preference controlling which alerts reach which channel.
+
+    ``user_email IS NULL`` holds an administrator default. ``quiet_hours`` is
+    stored for forward compatibility but is not enforced in v1.
+    """
+
+    __tablename__ = "alert_preferences"
+
+    # Primary key
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: uuid.uuid4().hex)
+
+    # Owner (NULL = administrator default)
+    user_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Scope of the preference
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)  # global, category, entity
+    scope_value: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+
+    # Routing
+    channel: Mapped[str] = mapped_column(String(20), nullable=False)  # in_app, email, webhook
+    min_severity: Mapped[str] = mapped_column(String(20), nullable=False, default="LOW")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    mute_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    quiet_hours: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
+
+    __table_args__ = (UniqueConstraint("user_email", "scope", "scope_value", "channel", name="uq_alert_preferences_user_scope_channel"),)
+
+
+class AlertChannel(Base):
+    """An external delivery channel (webhook or email) configured for a team.
+
+    ``secret_encrypted`` holds the encrypted signing secret or credential and is
+    never returned by the API. The service and API for channels arrive in a later
+    phase; the table is created now so that the schema is complete.
+    """
+
+    __tablename__ = "alert_channels"
+
+    # Primary key
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: uuid.uuid4().hex)
+
+    # Channel definition
+    type: Mapped[str] = mapped_column(String(20), nullable=False)  # webhook, email
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    secret_encrypted: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Team scope (NULL = global)
+    team_id: Mapped[Optional[str]] = mapped_column(String(36), index=True, nullable=True)
+
+    # State and audit
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,7 @@ def _assemble_routers(  # noqa: C901 — deliberate single-function assembly, co
     tag_router: APIRouter,
     export_import_router: APIRouter,
     a2a_router: APIRouter,
+    v1_only: bool = False,
 ) -> None:
     """Include all sub-routers into *target_router* (prefix-agnostic).
 
@@ -136,6 +137,21 @@ def _assemble_routers(  # noqa: C901 — deliberate single-function assembly, co
         logger.info("A2A router included - A2A features enabled")
     else:
         logger.info("A2A router not included - A2A features disabled")
+
+    # Alerts inbox, stream and preferences (Issue #5805). Mounted only on the
+    # versioned target (v1_only) so the deprecated unversioned alias router never
+    # gains /alerts. The router is also gated on the master flag.
+    if v1_only and getattr(settings, "alerting_enabled", False):
+        try:
+            # First-Party
+            from mcpgateway.routers.alerts import router as alerts_router  # pylint: disable=import-outside-toplevel
+
+            target_router.include_router(alerts_router)
+            logger.info("Alerts router included - alerting enabled")
+        except ImportError as e:
+            logger.error(f"Alerts router not available: {e}")
+    else:
+        logger.info("Alerts router not included - alerting disabled or legacy mount")
 
     if settings.observability_enabled:
         # First-Party
@@ -371,6 +387,7 @@ def build_v1_router(
         tag_router=tag_router,
         export_import_router=export_import_router,
         a2a_router=a2a_router,
+        v1_only=True,
     )
 
     # Product-language aliases for the existing gateway and virtual-server APIs.

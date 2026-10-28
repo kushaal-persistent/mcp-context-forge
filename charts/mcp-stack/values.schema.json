@@ -246,6 +246,53 @@
             "ALLOW_PUBLIC_VISIBILITY": {
               "type": "string"
             },
+            "ALERTING_ENABLED": {
+              "type": "string",
+              "description": "Master switch for the alerting and notification subsystem (Issue #5805)",
+              "default": "false"
+            },
+            "ALERTING_SOURCE_SECURITY_ENABLED": {
+              "type": "string"
+            },
+            "ALERTING_SOURCE_GATEWAY_HEALTH_ENABLED": {
+              "type": "string"
+            },
+            "ALERTING_SOURCE_PERFORMANCE_ENABLED": {
+              "type": "string"
+            },
+            "ALERTING_SOURCE_A2A_ENABLED": {
+              "type": "string"
+            },
+            "ALERTING_SOURCE_PLUGIN_ENABLED": {
+              "type": "string"
+            },
+            "ALERTING_DEDUP_WINDOW_SECONDS": {
+              "type": "string"
+            },
+            "ALERTING_EXPIRY_DAYS": {
+              "type": "string"
+            },
+            "ALERTING_RETENTION_DAYS": {
+              "type": "string"
+            },
+            "ALERTING_MAX_RECIPIENTS": {
+              "type": "string"
+            },
+            "ALERTING_QUEUE_MAX_DEPTH": {
+              "type": "string"
+            },
+            "ALERTING_DISPATCH_POLL_SECONDS": {
+              "type": "string"
+            },
+            "ALERTING_DISPATCH_BATCH_SIZE": {
+              "type": "string"
+            },
+            "ALERTING_DELIVERY_MAX_ATTEMPTS": {
+              "type": "string"
+            },
+            "ALERTING_DELIVERY_LEASE_SECONDS": {
+              "type": "string"
+            },
             "APP_DOMAIN": {
               "type": "string",
               "description": "Domain for production CORS origins",

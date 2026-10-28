@@ -2372,6 +2372,25 @@ class Settings(BaseSettings):
     siem_destinations: List[Dict[str, Any]] = Field(default_factory=list, description="SIEM destination configuration (JSON list)")
     siem_destinations_file: Optional[str] = Field(default=None, description="Optional JSON/YAML file path containing SIEM destination configuration")
 
+    # Alerting and Notification Configuration (Issue #5805)
+    # The master flag gates the whole subsystem. A source is active only when the master flag is also true.
+    # Performance, A2A and plugin sources default to off until their producers ship.
+    alerting_enabled: bool = Field(default=False, description="Master switch for the alerting and notification subsystem")
+    alerting_source_security_enabled: bool = Field(default=True, description="Emit alerts from security events (requires alerting_enabled)")
+    alerting_source_gateway_health_enabled: bool = Field(default=True, description="Emit alerts from gateway health transitions (requires alerting_enabled)")
+    alerting_source_performance_enabled: bool = Field(default=False, description="Emit alerts from performance thresholds (requires alerting_enabled)")
+    alerting_source_a2a_enabled: bool = Field(default=False, description="Emit alerts from A2A agent failures (requires alerting_enabled)")
+    alerting_source_plugin_enabled: bool = Field(default=False, description="Emit alerts from plugin failures (requires alerting_enabled)")
+    alerting_dedup_window_seconds: int = Field(default=300, ge=1, le=86400, description="Window in seconds in which repeated alerts with the same dedup key are merged")
+    alerting_expiry_days: int = Field(default=30, ge=1, le=3650, description="Days after which open alerts expire")
+    alerting_retention_days: int = Field(default=90, ge=1, le=3650, description="Days after which alert rows and deliveries are deleted (must be >= alerting_expiry_days)")
+    alerting_max_recipients: int = Field(default=1000, ge=1, le=100000, description="Maximum recipients per alert fan-out")
+    alerting_queue_max_depth: int = Field(default=10000, ge=100, le=1000000, description="Maximum pending deliveries before new alerts are shed")
+    alerting_dispatch_poll_seconds: int = Field(default=2, ge=1, le=60, description="Delivery dispatcher poll interval in seconds")
+    alerting_dispatch_batch_size: int = Field(default=100, ge=1, le=1000, description="Maximum deliveries claimed per dispatcher tick")
+    alerting_delivery_max_attempts: int = Field(default=5, ge=1, le=50, description="Delivery attempts before a delivery is dead-lettered")
+    alerting_delivery_lease_seconds: int = Field(default=60, ge=5, le=3600, description="Seconds a claimed delivery stays leased before another worker may retry it")
+
     # API Token Tracking Configuration
     # Controls how token usage and last_used timestamps are tracked
     token_usage_logging_enabled: bool = Field(default=True, description="Enable API token usage logging middleware")
@@ -2603,6 +2622,24 @@ class Settings(BaseSettings):
         except Exception as exc:  # pragma: no cover - defensive config loading
             logger.warning("Failed loading SIEM destinations file '%s': %s", self.siem_destinations_file, exc)
 
+        return self
+
+    @model_validator(mode="after")
+    def validate_alerting_retention(self) -> Self:
+        """Reject alerting retention windows shorter than the expiry window.
+
+        Alerts must stay visible until they expire, so deletion (retention) can never happen before expiry.
+
+        Returns:
+            Self: The validated settings instance.
+
+        Raises:
+            ValueError: If ``alerting_retention_days`` is less than ``alerting_expiry_days``.
+        """
+        if self.alerting_retention_days < self.alerting_expiry_days:
+            raise ValueError(
+                f"alerting_retention_days ({self.alerting_retention_days}) must be greater than or equal to alerting_expiry_days ({self.alerting_expiry_days})"
+            )
         return self
 
     @field_validator("log_level", mode="before")

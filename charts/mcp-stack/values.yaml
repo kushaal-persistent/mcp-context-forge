@@ -824,6 +824,24 @@ mcpContextForge:
     # ELASTICSEARCH_INDEX_PREFIX: "mcpgateway-logs"
     # WEBHOOK_LOGGING_URLS: "[]"
 
+    # Alerting and notification (Issue #5805, disabled by default)
+    ALERTING_ENABLED: "false" # master switch for the alerting subsystem
+    # Uncomment when enabling alerting (defaults shown):
+    # ALERTING_SOURCE_SECURITY_ENABLED: "true"
+    # ALERTING_SOURCE_GATEWAY_HEALTH_ENABLED: "true"
+    # ALERTING_SOURCE_PERFORMANCE_ENABLED: "false"
+    # ALERTING_SOURCE_A2A_ENABLED: "false"
+    # ALERTING_SOURCE_PLUGIN_ENABLED: "false"
+    # ALERTING_DEDUP_WINDOW_SECONDS: "300"
+    # ALERTING_EXPIRY_DAYS: "30"
+    # ALERTING_RETENTION_DAYS: "90"
+    # ALERTING_MAX_RECIPIENTS: "1000"
+    # ALERTING_QUEUE_MAX_DEPTH: "10000"
+    # ALERTING_DISPATCH_POLL_SECONDS: "2"
+    # ALERTING_DISPATCH_BATCH_SIZE: "100"
+    # ALERTING_DELIVERY_MAX_ATTEMPTS: "5"
+    # ALERTING_DELIVERY_LEASE_SECONDS: "60"
+
     # Log search
     LOG_RETENTION_DAYS: "30" # retention in days
     LOG_SEARCH_MAX_RESULTS: "1000" # max results per search

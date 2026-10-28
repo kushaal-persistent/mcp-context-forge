@@ -588,6 +588,7 @@ class SecurityLogger:
             db.commit()
             db.refresh(event)
 
+            self._maybe_emit_alert(event)
             return event
 
         except Exception as e:
@@ -598,6 +599,57 @@ class SecurityLogger:
         finally:
             if should_close:
                 db.close()
+
+    def _maybe_emit_alert(self, event: SecurityEvent) -> None:
+        """Raise a security alert for a persisted event when a threshold is breached (never raises).
+
+        The alert is only raised when ``alerting_enabled`` and
+        ``alerting_source_security_enabled`` are both true. It fires when the threat
+        score reaches ``security_threat_score_alert``, or when a failed authentication
+        reaches ``security_failed_auth_threshold`` recent failures. Security events carry
+        no team, so the alert is global (``team_id=None``, admin-only). The metadata and
+        body hold only the threat score, category and failure count; user agents,
+        descriptions and any secret material are never copied into the alert.
+
+        Args:
+            event: The ``SecurityEvent`` row that was just committed.
+        """
+        try:
+            if not getattr(settings, "alerting_enabled", False) or not getattr(settings, "alerting_source_security_enabled", False):
+                return
+
+            threat_score = float(event.threat_score or 0.0)
+            failed_count = int(event.failed_attempts_count or 0)
+            threat_threshold = float(getattr(settings, "security_threat_score_alert", self.threat_score_alert_threshold))
+            failed_threshold = int(getattr(settings, "security_failed_auth_threshold", self.failed_auth_threshold))
+            is_auth_failure = event.event_type == SecurityEventType.AUTHENTICATION_FAILURE.value
+
+            threat_breach = threat_score >= threat_threshold
+            failed_auth_breach = is_auth_failure and failed_count >= failed_threshold
+            if not (threat_breach or failed_auth_breach):
+                return
+
+            # Late import avoids an import cycle through mcpgateway.services.__init__.
+            from mcpgateway.services.alert_service import emit_alert_safe  # pylint: disable=import-outside-toplevel
+
+            event_type_value = str(event.event_type)
+            category = str(event.category or "")
+            client_ip = str(event.client_ip or "")
+            emit_alert_safe(
+                source="security",
+                type=event_type_value,
+                severity=str(event.severity or "HIGH"),
+                entity_type="security_event",
+                entity_id=str(event.id),
+                team_id=None,
+                dedup_key=f"security:{event_type_value}:{client_ip}",
+                title=f"Security event: {event_type_value}",
+                body=f"{category} event from {client_ip}. Threat score {threat_score:.2f}; recent failed attempts {failed_count}.",
+                metadata={"threat_score": threat_score, "category": category, "failed_attempts_count": failed_count},
+                security_event_id=str(event.id),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.debug("Security alert emission skipped: %s", type(exc).__name__)
 
     def _emit_to_siem(self, source: str, event: Dict[str, Any]) -> None:
         """Submit event to SIEM export pipeline (best-effort, non-blocking).

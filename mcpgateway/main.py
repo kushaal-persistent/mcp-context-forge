@@ -1806,6 +1806,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             await metrics_rollup_service.start()
             logger.info("Metrics rollup service initialized (interval: %dh)", settings.metrics_rollup_interval_hours)
 
+        # Start the alert delivery dispatcher (Issue #5805). It acts only on the primary worker.
+        # A startup failure is logged and must not stop the gateway.
+        if settings.alerting_enabled:
+            try:
+                # First-Party
+                from mcpgateway.services.alert_delivery import get_alert_dispatcher  # pylint: disable=import-outside-toplevel
+
+                await get_alert_dispatcher().start()
+                logger.info("Alert delivery dispatcher initialized")
+            except Exception as alert_exc:  # pylint: disable=broad-exception-caught
+                logger.error("Alert delivery dispatcher failed to start: %s", alert_exc, exc_info=True)
+
         refresh_slugs_on_startup()
 
         await asyncio.to_thread(_check_url_scheme_compliance)
@@ -2023,6 +2035,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
         if dataplane_publisher_service is not None:
             services_to_shutdown.insert(3, dataplane_publisher_service)
+
+        # Alert dispatcher stops first so no new outbox rows are claimed during shutdown.
+        if settings.alerting_enabled:
+            # First-Party
+            from mcpgateway.services.alert_delivery import get_alert_dispatcher  # pylint: disable=import-outside-toplevel
+
+            services_to_shutdown.insert(0, get_alert_dispatcher())
 
         if settings.gateway_modern_listeners_enabled:
             modern_listener_service = get_modern_listener_service()
@@ -12978,6 +12997,21 @@ if settings.mcpgateway_admin_api_enabled and settings.siem_export_enabled:
         logger.warning(f"SIEM router not available: {e}")
 else:
     logger.info("SIEM router not included - admin API or SIEM export disabled")
+
+# Include alerts admin router (Issue #5805). Mounted at /admin/alerts behind CSRF,
+# following the SIEM template. The user inbox (/v1/alerts) is mounted by the v1 router.
+if settings.mcpgateway_admin_api_enabled and settings.alerting_enabled:
+    try:
+        # First-Party
+        from mcpgateway.admin import enforce_admin_csrf  # pylint: disable=import-outside-toplevel
+        from mcpgateway.routers.alerts import admin_router as alerts_admin_router  # pylint: disable=import-outside-toplevel
+
+        app.include_router(alerts_admin_router, dependencies=[Depends(enforce_admin_csrf)])
+        logger.info("Alerts admin router included")
+    except ImportError as e:  # pragma: no cover - optional import guard
+        logger.warning(f"Alerts admin router not available: {e}")
+else:
+    logger.info("Alerts admin router not included - admin API or alerting disabled")
 
 # NOTE: observability_router and metrics_maintenance_router are mounted via
 # _assemble_routers() → build_v1_router / build_legacy_router above.

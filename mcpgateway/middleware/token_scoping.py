@@ -185,6 +185,13 @@ _PERMISSION_PATTERNS: List[Tuple[str, Pattern[str], str]] = [
     ("POST", re.compile(r"^/tokens/teams/[^/]+(?:$|/)"), Permissions.TOKENS_CREATE),
     ("PUT", re.compile(r"^/tokens/[^/]+(?:$|/)"), Permissions.TOKENS_UPDATE),
     ("DELETE", re.compile(r"^/tokens/[^/]+(?:$|/)"), Permissions.TOKENS_REVOKE),
+    # Alerts inbox and preferences (Issue #5805; v1 prefix stripped before matching).
+    # Specific paths must precede the general GET /alerts rule below.
+    ("GET", re.compile(r"^/alerts/preferences(?:$|/)"), Permissions.ALERTS_SUBSCRIBE),
+    ("PUT", re.compile(r"^/alerts/preferences(?:$|/)"), Permissions.ALERTS_SUBSCRIBE),
+    ("GET", re.compile(r"^/alerts/stream(?:$|/)"), Permissions.ALERTS_READ),
+    ("GET", re.compile(r"^/alerts(?:$|/)"), Permissions.ALERTS_READ),
+    ("POST", re.compile(r"^/alerts(?:$|/)"), Permissions.ALERTS_ACKNOWLEDGE),
     # Compliance reporting
     ("GET", re.compile(r"^/compliance(?:$|/)"), Permissions.ADMIN_COMPLIANCE),
     ("POST", re.compile(r"^/compliance(?:$|/)"), Permissions.ADMIN_COMPLIANCE),
@@ -272,6 +279,11 @@ _ADMIN_PERMISSION_PATTERNS: List[Tuple[str, Pattern[str], str]] = [
     ("GET", re.compile(r"^/admin/sections/gateways(?:$|/)"), Permissions.GATEWAYS_READ),
     # Specialized admin domains
     ("GET", re.compile(r"^/admin/events(?:$|/)"), Permissions.ADMIN_EVENTS),
+    # Alerting admin (Issue #5805): status now; channels and DLQ in a later phase.
+    ("GET", re.compile(r"^/admin/alerts(?:$|/)"), Permissions.ALERTS_MANAGE),
+    ("POST", re.compile(r"^/admin/alerts(?:$|/)"), Permissions.ALERTS_MANAGE),
+    ("PUT", re.compile(r"^/admin/alerts(?:$|/)"), Permissions.ALERTS_MANAGE),
+    ("DELETE", re.compile(r"^/admin/alerts(?:$|/)"), Permissions.ALERTS_MANAGE),
     ("GET", re.compile(r"^/admin/grpc(?:$|/)"), Permissions.ADMIN_GRPC),
     ("POST", re.compile(r"^/admin/grpc(?:$|/)"), Permissions.ADMIN_GRPC),
     ("PUT", re.compile(r"^/admin/grpc(?:$|/)"), Permissions.ADMIN_GRPC),

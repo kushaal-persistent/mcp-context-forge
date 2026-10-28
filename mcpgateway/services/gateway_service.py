@@ -4982,6 +4982,24 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
             with cast(Any, SessionLocal)() as db:
                 await self.set_gateway_state(db, gateway.id, activate=True, reachable=False, only_update_reachable=True, last_error=sanitized_error)
 
+            # Raise a team-scoped alert for the outage. Emission never raises and is a no-op
+            # unless alerting and the gateway_health source are enabled.
+            # Late import keeps the alert module out of gateway_service import time.
+            from mcpgateway.services.alert_service import emit_alert_safe  # pylint: disable=import-outside-toplevel
+
+            emit_alert_safe(
+                source="gateway_health",
+                type="gateway_unreachable",
+                severity="HIGH",
+                entity_type="gateway",
+                entity_id=str(gateway.id),
+                team_id=getattr(gateway, "team_id", None),
+                dedup_key=f"gateway:{gateway.id}:unhealthy",
+                title=f"Gateway unreachable: {SecurityValidator.sanitize_log_message(str(getattr(gateway, 'name', '') or gateway.id))}",
+                body=f"Gateway failed {GW_FAILURE_THRESHOLD} consecutive health checks and was deactivated. Last error: {sanitized_error}",
+                metadata={"failure_threshold": GW_FAILURE_THRESHOLD},
+            )
+
     async def check_health_of_gateways(self, gateways: List[DbGateway], user_email: Optional[str] = None, *, cycle_started_at: Optional[datetime] = None) -> bool:
         """Check health of a batch of gateways.
 
@@ -5434,6 +5452,16 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
 
                     # Reactivate / update last_seen (success path)
                     await self._mark_gateway_reachable(gateway_id, gateway_name, gateway_enabled, gateway_reachable)
+
+                    # Recovery: auto-resolve the outage alert only when the gateway was previously
+                    # unreachable, so healthy checks do no alert work.
+                    if not gateway_reachable and getattr(settings, "alerting_enabled", False):
+                        try:
+                            from mcpgateway.services.alert_service import get_alert_service  # pylint: disable=import-outside-toplevel
+
+                            await asyncio.to_thread(get_alert_service().resolve_by_dedup_key, f"gateway:{gateway_id}:unhealthy")
+                        except Exception:  # pylint: disable=broad-except
+                            logger.debug("Alert auto-resolve skipped for gateway %s", gateway_id, exc_info=True)
 
                     # Auto-refresh tools/resources/prompts if enabled
                     should_auto_refresh = False
