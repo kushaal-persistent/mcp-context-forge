@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+
+# The repo-root .gitignore ignores "lib/" and ".env.*"; re-include what this app needs.
+!src/lib/
+!.env.example
