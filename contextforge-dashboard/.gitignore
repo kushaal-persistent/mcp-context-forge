@@ -1,0 +1,7 @@
+node_modules
+dist
+.env
+.env.local
+
+# The repo-root .gitignore ignores ".env.*"; re-include the example file.
+!.env.example
